@@ -1,0 +1,25 @@
+/*
+ * WiFi Configuration for HID Relay
+ *
+ * Copy this file to wifi_config.h and update the values.
+ * wifi_config.h is in .gitignore to prevent credential leaks.
+ *
+ * Usage:
+ *   cp wifi_config.h.example wifi_config.h
+ *   # Edit wifi_config.h with your credentials
+ */
+
+#ifndef _WIFI_CONFIG_H_
+#define _WIFI_CONFIG_H_
+
+// WiFi network credentials
+#define WIFI_SSID     "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+
+// UDP server configuration
+#define UDP_PORT 4242
+
+// Connection timeout in milliseconds
+#define WIFI_CONNECT_TIMEOUT_MS 30000
+
+#endif /* _WIFI_CONFIG_H_ */

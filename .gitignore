@@ -51,3 +51,6 @@ Desktop.ini
 
 # Claude Code local settings
 .claude/
+
+# WiFi credentials - DO NOT COMMIT
+wifi_config.h
