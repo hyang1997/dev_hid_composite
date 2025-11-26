@@ -1,0 +1,53 @@
+# Build output
+build/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!pico_sdk_import.cmake
+
+# Compiled binaries
+*.elf
+*.uf2
+*.bin
+*.hex
+*.dis
+*.map
+
+# Object files
+*.o
+*.obj
+
+# IDE - VS Code (uncomment if you want to track .vscode)
+# .vscode/
+
+# IDE - CLion
+.idea/
+cmake-build-*/
+
+# IDE - Eclipse
+.project
+.cproject
+.settings/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Backup files
+*~
+*.bak
+*.swp
+*.swo
+
+# Debug files
+*.dSYM/
+
+# Claude Code local settings
+.claude/
