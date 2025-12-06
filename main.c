@@ -96,6 +96,64 @@ static void udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     }
 }
 
+// WiFi state machine
+enum {
+  WIFI_STATE_INIT,
+  WIFI_STATE_CONNECTING,
+  WIFI_STATE_CONNECTED,
+  WIFI_STATE_FAILED
+};
+static int wifi_state = WIFI_STATE_INIT;
+static bool wifi_initialized = false;
+
+void wifi_task(void) {
+  switch (wifi_state) {
+    case WIFI_STATE_INIT:
+      if (cyw43_arch_init()) {
+        wifi_state = WIFI_STATE_FAILED;
+      } else {
+        cyw43_arch_enable_sta_mode();
+
+        // Set hostname to something inconspicuous
+        // Note: MAC address still shows as Raspberry Pi - would need driver mods to change
+        struct netif *netif = &cyw43_state.netif[CYW43_ITF_STA];
+        netif_set_hostname(netif, WIFI_HOSTNAME);
+
+        // Start async connection
+        cyw43_arch_wifi_connect_async(
+            WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_MIXED_PSK);
+        wifi_state = WIFI_STATE_CONNECTING;
+      }
+      wifi_initialized = true;
+      break;
+
+    case WIFI_STATE_CONNECTING:
+      {
+        int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+        if (status == CYW43_LINK_UP) {
+          // Connected! Set up UDP listener
+          udp_pcb = udp_new();
+          if (udp_pcb != NULL) {
+            err_t err = udp_bind(udp_pcb, IP_ADDR_ANY, UDP_PORT);
+            if (err == ERR_OK) {
+              udp_recv(udp_pcb, udp_recv_callback, NULL);
+            }
+          }
+          wifi_state = WIFI_STATE_CONNECTED;
+        } else if (status == CYW43_LINK_FAIL || status == CYW43_LINK_BADAUTH || status == CYW43_LINK_NONET) {
+          wifi_state = WIFI_STATE_FAILED;
+        }
+        // else still connecting, keep waiting
+      }
+      break;
+
+    case WIFI_STATE_CONNECTED:
+    case WIFI_STATE_FAILED:
+      // Nothing to do
+      break;
+  }
+}
+
 /*------------- MAIN -------------*/
 int main(void)
 {
@@ -108,33 +166,8 @@ int main(void)
     board_init_after_tusb();
   }
 
-  // Initialize WiFi chip
-  if (cyw43_arch_init()) {
-    // WiFi init failed - continue anyway, USB HID still works
-    blink_interval_ms = 100; // Fast blink to indicate error
-  } else {
-    // Enable station mode
-    cyw43_arch_enable_sta_mode();
-
-    // Connect to WiFi network
-    int connect_result = cyw43_arch_wifi_connect_timeout_ms(
-        WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, WIFI_CONNECT_TIMEOUT_MS);
-
-    if (connect_result == 0) {
-      // Connected! Set up UDP listener
-      udp_pcb = udp_new();
-      if (udp_pcb != NULL) {
-        err_t err = udp_bind(udp_pcb, IP_ADDR_ANY, UDP_PORT);
-        if (err == ERR_OK) {
-          udp_recv(udp_pcb, udp_recv_callback, NULL);
-          // Success - normal blink pattern will show USB state
-        }
-      }
-    }
-    // If WiFi connect failed, USB HID still works, just no remote control
-  }
-
   uint32_t utility_counter = 0;
+  uint32_t wifi_init_delay = 0;
 
   while (1)
   {
@@ -142,8 +175,18 @@ int main(void)
     tud_task();
     hid_task();
 
-    // Poll the WiFi/lwIP stack
-    cyw43_arch_poll();
+    // Delay WiFi init until USB is stable (after ~100k loops)
+    if (!wifi_initialized) {
+      if (++wifi_init_delay > 100000) {
+        wifi_task();  // This will init WiFi
+      }
+    } else {
+      // Poll the WiFi/lwIP stack only after init
+      cyw43_arch_poll();
+
+      // Run WiFi state machine (handles connecting + serial status)
+      wifi_task();
+    }
 
     // Low priority utility tasks
     // Run this block roughly every 50000 loops to reduce overhead
@@ -200,6 +243,7 @@ void process_command(char *buf)
 
   if (strcmp(token, "keyboard") == 0)
   {
+    // Keyboard goes to Interface 0 (boot keyboard, no report ID)
     uint8_t modifier = 0;
     uint8_t keycode[6] = {0};
     int i = 0;
@@ -216,10 +260,12 @@ void process_command(char *buf)
       if (val >= 0 && val <= 255) keycode[i++] = (uint8_t)val;
     }
 
-    tud_hid_keyboard_report(REPORT_ID_KEYBOARD, modifier, keycode);
+    // Send to boot keyboard interface (instance 0, no report ID)
+    tud_hid_n_keyboard_report(ITF_NUM_HID_BOOT_KBD, 0, modifier, keycode);
   }
   else if (strcmp(token, "mouse") == 0)
   {
+    // Mouse goes to Interface 1 (extended HID)
     uint8_t buttons = 0;
     int8_t x = 0, y = 0, vertical = 0, horizontal = 0;
     long temp_val;
@@ -254,36 +300,22 @@ void process_command(char *buf)
       if (temp_val >= -127 && temp_val <= 127) horizontal = (int8_t)temp_val;
     }
 
-    tud_hid_mouse_report(REPORT_ID_MOUSE, buttons, x, y, vertical, horizontal);
+    // Send to extended interface (instance 1, with report ID)
+    tud_hid_n_mouse_report(ITF_NUM_HID_EXTENDED, REPORT_ID_MOUSE, buttons, x, y, vertical, horizontal);
   }
   else if (strcmp(token, "consumer") == 0)
   {
+    // Consumer control goes to Interface 1 (extended HID)
     uint16_t code = 0;
     token = strtok_r(NULL, " ", &saveptr);
     if (token) {
        long val = strtol(token, NULL, 10);
        if (val >= 0 && val <= 65535) code = (uint16_t)val;
     }
-    tud_hid_report(REPORT_ID_CONSUMER_CONTROL, &code, sizeof(code));
+    // Send to extended interface (instance 1, with report ID)
+    tud_hid_n_report(ITF_NUM_HID_EXTENDED, REPORT_ID_CONSUMER_CONTROL, &code, sizeof(code));
   }
-  else if (strcmp(token, "gamepad") == 0)
-  {
-    hid_gamepad_report_t report = {0};
-    long temp_val;
-
-    token = strtok_r(NULL, " ", &saveptr); if(token) { temp_val = strtol(token, NULL, 10); if (temp_val >=-127 && temp_val <= 127) report.x = (int8_t)temp_val; }
-    token = strtok_r(NULL, " ", &saveptr); if(token) { temp_val = strtol(token, NULL, 10); if (temp_val >=-127 && temp_val <= 127) report.y = (int8_t)temp_val; }
-    token = strtok_r(NULL, " ", &saveptr); if(token) { temp_val = strtol(token, NULL, 10); if (temp_val >=-127 && temp_val <= 127) report.z = (int8_t)temp_val; }
-    token = strtok_r(NULL, " ", &saveptr); if(token) { temp_val = strtol(token, NULL, 10); if (temp_val >=-127 && temp_val <= 127) report.rz = (int8_t)temp_val; }
-    token = strtok_r(NULL, " ", &saveptr); if(token) { temp_val = strtol(token, NULL, 10); if (temp_val >=-127 && temp_val <= 127) report.rx = (int8_t)temp_val; }
-    token = strtok_r(NULL, " ", &saveptr); if(token) { temp_val = strtol(token, NULL, 10); if (temp_val >=-127 && temp_val <= 127) report.ry = (int8_t)temp_val; }
-
-    token = strtok_r(NULL, " ", &saveptr); if(token) { temp_val = strtol(token, NULL, 10); if (temp_val >= 0 && temp_val <= 255) report.hat = (uint8_t)temp_val; }
-
-    token = strtok_r(NULL, " ", &saveptr); if(token) { report.buttons = (uint32_t)strtoul(token, NULL, 10); }
-
-    tud_hid_report(REPORT_ID_GAMEPAD, &report, sizeof(report));
-  }
+  // Gamepad removed - real GMMK Pro doesn't have gamepad
 }
 
 // This task handles reading UDP commands and sending HID reports
@@ -348,14 +380,15 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const* buffer, uint16_t bufsize)
 {
-  (void) instance;
+  (void) report_id;
 
   if (report_type == HID_REPORT_TYPE_OUTPUT)
   {
     // Set keyboard LED e.g Capslock, Numlock etc...
-    if (report_id == REPORT_ID_KEYBOARD)
+    // Boot keyboard is on interface 0, no report ID used
+    if (instance == ITF_NUM_HID_BOOT_KBD)
     {
-      if ( bufsize < 1 ) return;
+      if (bufsize < 1) return;
 
       uint8_t const kbd_leds = buffer[0];
 
@@ -379,13 +412,41 @@ void led_blinking_task(void)
   static uint32_t start_ms = 0;
   static bool led_state = false;
 
-  // blink is disabled
-  if (!blink_interval_ms) return;
+  // Determine blink pattern based on WiFi state (after WiFi is initialized)
+  uint32_t interval = blink_interval_ms;
+
+  if (wifi_initialized) {
+    switch (wifi_state) {
+      case WIFI_STATE_CONNECTING:
+        interval = 200;  // Fast blink while connecting
+        break;
+      case WIFI_STATE_CONNECTED:
+        interval = 0;    // Solid ON when connected
+        break;
+      case WIFI_STATE_FAILED:
+        interval = 100;  // Very fast blink on failure
+        break;
+      default:
+        break;
+    }
+  }
+
+  // Solid LED for connected state
+  if (interval == 0) {
+    if (wifi_initialized) {
+      cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+    }
+    return;
+  }
 
   // Blink every interval ms
-  if ( board_millis() - start_ms < blink_interval_ms) return;
-  start_ms += blink_interval_ms;
+  if (board_millis() - start_ms < interval) return;
+  start_ms = board_millis();
 
-  board_led_write(led_state);
-  led_state = 1 - led_state; // toggle
+  led_state = !led_state;
+  if (wifi_initialized) {
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_state);
+  } else {
+    board_led_write(led_state);
+  }
 }

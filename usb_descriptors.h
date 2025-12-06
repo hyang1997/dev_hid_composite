@@ -24,12 +24,22 @@
 
 #ifndef USB_DESCRIPTORS_H_
 #define USB_DESCRIPTORS_H_
+
+// Interface numbers
 enum
 {
-  REPORT_ID_KEYBOARD = 1,
-  REPORT_ID_MOUSE,
+  ITF_NUM_HID_BOOT_KBD = 0,  // Boot keyboard (no report ID)
+  ITF_NUM_HID_EXTENDED,      // Extended HID (mouse, consumer)
+  ITF_NUM_TOTAL
+};
+
+// Report IDs for extended interface only (Interface 1)
+// Boot keyboard (Interface 0) does NOT use report IDs
+enum
+{
+  REPORT_ID_MOUSE = 1,
   REPORT_ID_CONSUMER_CONTROL,
-  REPORT_ID_GAMEPAD,
   REPORT_ID_COUNT
 };
+
 #endif /* USB_DESCRIPTORS_H_ */

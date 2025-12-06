@@ -23,7 +23,7 @@ Makefile
 
 # IDE - VS Code (uncomment if you want to track .vscode)
 # .vscode/
-
+gmmk_usb_info.txt
 # IDE - CLion
 .idea/
 cmake-build-*/
